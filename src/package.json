@@ -1,0 +1,15 @@
+{
+  "name": "gcal-discord-bot",
+  "version": "2.0.0",
+  "description": "Googleカレンダー ↔ Discord Bot",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "googleapis": "^140.0.1",
+    "node-cron": "^3.0.3",
+    "dotenv": "^16.3.1"
+  }
+}
