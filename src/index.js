@@ -6,6 +6,7 @@
  * - 通知は NOTIFY_CHANNEL_ID（別途設定推奨）へ送信
  */
 require("dotenv").config();
+const logger = require("./logger"); // ログファイル記録（dotenvの直後に配置）
 const { Client, GatewayIntentBits, REST, Routes, PermissionFlagsBits, MessageFlags, EmbedBuilder } = require("discord.js");
 const cron = require("node-cron");
 
@@ -632,6 +633,7 @@ async function gracefulShutdown(signal) {
 
   clearTimeout(timer);
   client.destroy();
+  await logger.close();
   process.exit(0);
 }
 
