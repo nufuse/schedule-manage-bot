@@ -1,0 +1,21 @@
+# fly.toml - Fly.io 設定ファイル
+# fly launch で自動生成されるアプリ名に合わせて app を変更してください
+app = "schedule-manage-bot"
+primary_region = "nrt"
+
+[build]
+
+[env]
+  NODE_ENV = "production"
+  TZ = "Asia/Tokyo"
+
+# Discordボットはウェブサーバー不要
+# HTTP サービスなし → 無料枠の shared-cpu-1x が使われる
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+# data/ ディレクトリを永続ボリュームにマウント
+[[mounts]]
+  source   = "schedule_bot_data"
+  destination = "/app/data"

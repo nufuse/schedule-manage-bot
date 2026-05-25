@@ -1,13 +1,15 @@
 /**
- * index.js v4
- * - ロール制限（OPERATOR_ROLE_NAME のロール or 管理者のみ操作可）
- * - 通知設定（予定ごとに複数設定可）
- * - メインチャンネルへの投稿は固定2件のみ
- * - 通知は NOTIFY_CHANNEL_ID（別途設定推奨）へ送信
+ * index.js v5
+ * マルチギルド対応
+ * - /setup コマンドでギルドごとに設定
+ * - per-guild data: data/{guildId}/
  */
 require("dotenv").config();
-const logger = require("./logger"); // ログファイル記録（dotenvの直後に配置）
-const { Client, GatewayIntentBits, REST, Routes, PermissionFlagsBits, MessageFlags, EmbedBuilder } = require("discord.js");
+const logger = require("./logger");
+const {
+  Client, GatewayIntentBits, REST, Routes, PermissionFlagsBits, MessageFlags,
+  EmbedBuilder, SlashCommandBuilder,
+} = require("discord.js");
 const cron = require("node-cron");
 
 const { getMonthEvents, addEvent, updateEvent, getEvent, deleteEvent, hashEvents } = require("./calendar");
@@ -15,21 +17,39 @@ const { buildCalendarEmbed, buildCalendarButtons, buildStatusEmbed, buildActionB
 const { buildAddModal, buildEditModal } = require("./modals");
 const { loadState, saveState, getNoticesForEvent, setNoticesForEvent, deleteNoticesForEvent, resetFiredForEvent, deleteNoticeEntry } = require("./storage");
 const { checkAndFireNotices } = require("./notifier");
+const { loadConfig, saveConfig, deleteConfig, getAllGuildIds } = require("./guildConfig");
 
-const CRON_SCHEDULE       = process.env.CRON_SCHEDULE       || "*/5 * * * *";
-const CHANNEL_ID          = process.env.DISCORD_CHANNEL_ID;
-const OPERATOR_ROLE_NAME  = process.env.OPERATOR_ROLE_NAME  || "CalendarOperator";
-const LOG_CHANNEL_ID      = process.env.LOG_CHANNEL_ID;  // 操作ログ送信先（未設定ならログなし）
-const pendingEditInteractions = new Map(); // 編集選択メニュー削除用
-let isRunning = false; // cron多重実行防止フラグ
+const CRON_SCHEDULE = process.env.CRON_SCHEDULE || "*/5 * * * *";
+
+const pendingEditInteractions = new Map();
+const guildRunning = new Map();
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// ─── 権限チェック ─────────────────────────────────────
-function hasPermission(member) {
+const setupCommand = new SlashCommandBuilder()
+  .setName("setup")
+  .setDescription("このサーバーでスケジュール管理Botを設定します")
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+  .addChannelOption(opt =>
+    opt.setName("channel").setDescription("カレンダーを投稿するチャンネル").setRequired(true))
+  .addStringOption(opt =>
+    opt.setName("calendar_id").setDescription("Google Calendar ID").setRequired(true))
+  .addChannelOption(opt =>
+    opt.setName("notify_channel").setDescription("通知送信先チャンネル（省略: カレンダーチャンネルと同じ）"))
+  .addChannelOption(opt =>
+    opt.setName("log_channel").setDescription("操作ログ送信先チャンネル（省略: ログなし）"))
+  .addStringOption(opt =>
+    opt.setName("operator_role").setDescription("操作を許可するロール名（デフォルト: CalendarOperator）"));
+
+const removeSetupCommand = new SlashCommandBuilder()
+  .setName("setup-remove")
+  .setDescription("このサーバーのBot設定をすべて削除します")
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild);
+
+function hasPermission(member, operatorRoleName) {
   if (!member) return false;
   if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
-  return member.roles.cache.some(r => r.name === OPERATOR_ROLE_NAME);
+  return member.roles.cache.some(r => r.name === operatorRoleName);
 }
 
 function currentYM() {
@@ -37,7 +57,6 @@ function currentYM() {
   return { year: now.getFullYear(), month: now.getMonth() + 1 };
 }
 
-// 時刻文字列の正規化: "2100" → "21:00"、"900" → "09:00"、"21:00" → そのまま
 function normalizeTime(str) {
   if (!str) return "";
   str = str.trim();
@@ -47,19 +66,18 @@ function normalizeTime(str) {
     const padded = digits.padStart(4, "0");
     return `${padded.slice(0, 2)}:${padded.slice(2)}`;
   }
-  return str; // 不正形式はそのまま返してバリデーションでエラーになる
+  return str;
 }
 
-// 操作ログ Embed 送信
-async function sendAuditLog(action, interaction, { title, dateStr, timeStr, desc }) {
-  if (!LOG_CHANNEL_ID) return;
+async function sendAuditLog(action, interaction, { title, dateStr, timeStr, desc }, logChannelId) {
+  if (!logChannelId) return;
   try {
-    const ch = await client.channels.fetch(LOG_CHANNEL_ID);
+    const ch = await client.channels.fetch(logChannelId);
     const colorMap = { "追加": 0x57f287, "変更": 0xfee75c, "削除": 0xed4245 };
     const iconMap  = { "追加": "📅", "変更": "✏️", "削除": "🗑️" };
     const memberName = interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
-    let body = `**${title}**\n\ud83d\udcc5 ${dateStr}\u3000\`${timeStr}\``;
-    if (desc) body += `\n\ud83d\udcdd ${desc}`;
+    let body = `**${title}**\n📅 ${dateStr}\u3000\`${timeStr}\``;
+    if (desc) body += `\n📝 ${desc}`;
     const embed = new EmbedBuilder()
       .setColor(colorMap[action] ?? 0x5865f2)
       .setTitle(`${iconMap[action]} 予定${action}`)
@@ -72,7 +90,6 @@ async function sendAuditLog(action, interaction, { title, dateStr, timeStr, desc
   }
 }
 
-// カウントダウン付き自動削除ヘルパー
 function fmtCd(content, n) { return `${content}\n-# (${n}秒後に消えます)`; }
 function startCountdownDelete(interaction, content, seconds = 5) {
   for (let i = seconds - 1; i >= 1; i--) {
@@ -81,98 +98,151 @@ function startCountdownDelete(interaction, content, seconds = 5) {
   setTimeout(() => interaction.deleteReply().catch(() => {}), seconds * 1000);
 }
 
-// ─── 投稿1（カレンダー）upsert ────────────────────────
-async function upsertCalendarMessage(events, year, month) {
-  const channel = await client.channels.fetch(CHANNEL_ID);
-  const embed   = buildCalendarEmbed(events, year, month);
+async function upsertCalendarMessage(guildId, config, events, year, month) {
+  const channel = await client.channels.fetch(config.channelId);
+  const embed   = buildCalendarEmbed(guildId, events, year, month);
   const buttons = buildCalendarButtons(year, month);
-  const state   = loadState();
-
+  const state   = loadState(guildId);
   if (state.calendarMessageId) {
     try {
       const msg = await channel.messages.fetch(state.calendarMessageId);
       await msg.edit({ embeds: [embed], components: [buttons] });
       return;
-    } catch { console.warn("[Cal] 再作成"); }
+    } catch { console.warn(`[Cal][${guildId}] 再作成`); }
   }
   const msg = await channel.send({ embeds: [embed], components: [buttons] });
-  saveState({ calendarMessageId: msg.id });
+  saveState(guildId, { calendarMessageId: msg.id });
 }
 
-// ─── 投稿2（ステータス）upsert ───────────────────────
-async function upsertStatusMessage(events) {
-  const channel = await client.channels.fetch(CHANNEL_ID);
-  const state   = loadState();
-  const embed   = buildStatusEmbed(events, state.updatedAt, OPERATOR_ROLE_NAME);
+async function upsertStatusMessage(guildId, config, events) {
+  const channel = await client.channels.fetch(config.channelId);
+  const state   = loadState(guildId);
+  const embed   = buildStatusEmbed(guildId, events, state.updatedAt, config.operatorRoleName);
   const buttons = buildActionButtons();
-
   if (state.statusMessageId) {
     try {
       const msg = await channel.messages.fetch(state.statusMessageId);
       await msg.edit({ embeds: [embed], components: [buttons] });
       return;
-    } catch { console.warn("[Status] 再作成"); }
+    } catch { console.warn(`[Status][${guildId}] 再作成`); }
   }
   const msg = await channel.send({ embeds: [embed], components: [buttons] });
-  saveState({ statusMessageId: msg.id });
+  saveState(guildId, { statusMessageId: msg.id });
 }
 
-async function updateBoth(events, year, month) {
-  await upsertCalendarMessage(events, year, month);
-  await upsertStatusMessage(events);
+async function updateBoth(guildId, config, events, year, month) {
+  await upsertCalendarMessage(guildId, config, events, year, month);
+  await upsertStatusMessage(guildId, config, events);
 }
 
-// ─── メイン処理 ───────────────────────────────────────
-async function run(isFirst = false, force = false) {
-  if (isRunning && !isFirst) {
-    console.warn("[Cron] 前回の実行がまだ完了していないためスキップ");
+async function run(guildId, config, isFirst = false, force = false) {
+  if (guildRunning.get(guildId) && !isFirst) {
+    console.warn(`[Cron][${guildId}] スキップ`);
     return;
   }
-  isRunning = true;
+  guildRunning.set(guildId, true);
   const ts = new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" });
-  console.log(`[${ts}] チェック開始`);
+  console.log(`[${ts}][${guildId}] チェック開始`);
   try {
     const { year, month } = currentYM();
-    const events  = await getMonthEvents(year, month);
+    const events  = await getMonthEvents(config.calendarId, year, month);
     const newHash = hashEvents(events);
-    const state   = loadState();
-
+    const state   = loadState(guildId);
     if (isFirst || !state.lastHash || force || state.lastHash !== newHash) {
-      await updateBoth(events, year, month);
-      saveState({ lastHash: newHash, updatedAt: new Date().toISOString() });
+      await updateBoth(guildId, config, events, year, month);
+      saveState(guildId, { lastHash: newHash, updatedAt: new Date().toISOString() });
     } else {
-      await upsertStatusMessage(events);
+      await upsertStatusMessage(guildId, config, events);
     }
-    // 通知チェック（毎回）
-    await checkAndFireNotices(client);
+    await checkAndFireNotices(client, guildId, config);
   } catch (err) {
-    console.error("エラー:", err);
+    console.error(`[Run][${guildId}] エラー:`, err);
   } finally {
-    isRunning = false;
+    guildRunning.set(guildId, false);
   }
 }
 
-// ─── スラッシュコマンド登録なし ─────────────────────────
-async function registerCommands(guildId) {
+async function registerGlobalCommands() {
   const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
-  await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), { body: [] }).catch(console.error);
+  await rest.put(
+    Routes.applicationCommands(client.user.id),
+    { body: [setupCommand.toJSON(), removeSetupCommand.toJSON()] }
+  ).catch(console.error);
 }
 
-// ─── インタラクション ─────────────────────────────────
 client.on("interactionCreate", async (interaction) => {
+  const guildId = interaction.guildId;
 
-  // ── ボタン ──────────────────────────────────────────
+  if (interaction.isChatInputCommand()) {
+    if (interaction.commandName === "setup") {
+      await interaction.deferReply({ ephemeral: true });
+      const channel       = interaction.options.getChannel("channel");
+      const calendarId    = interaction.options.getString("calendar_id");
+      const notifyChannel = interaction.options.getChannel("notify_channel");
+      const logChannel    = interaction.options.getChannel("log_channel");
+      const operatorRole  = interaction.options.getString("operator_role") || "CalendarOperator";
+      const config = {
+        channelId:        channel.id,
+        calendarId,
+        notifyChannelId:  notifyChannel?.id || null,
+        logChannelId:     logChannel?.id || null,
+        operatorRoleName: operatorRole,
+      };
+      saveConfig(guildId, config);
+      try {
+        const { year, month } = currentYM();
+        const events = await getMonthEvents(calendarId, year, month);
+        await updateBoth(guildId, config, events, year, month);
+        saveState(guildId, { lastHash: hashEvents(events), updatedAt: new Date().toISOString() });
+        const serviceEmail = process.env.GOOGLE_CLIENT_EMAIL || "（未設定）";
+        await interaction.editReply({
+          content:
+            "✅ **セットアップ完了！**\n\n" +
+            `📅 カレンダーチャンネル: <#${channel.id}>\n` +
+            `📆 Google Calendar ID: \`${calendarId}\`\n` +
+            `🔔 通知チャンネル: ${notifyChannel ? `<#${notifyChannel.id}>` : "カレンダーチャンネルと同じ"}\n` +
+            `📝 ログチャンネル: ${logChannel ? `<#${logChannel.id}>` : "なし"}\n` +
+            `🔐 操作ロール: \`${operatorRole}\`\n\n` +
+            "> ⚠️ **Googleカレンダーの共有設定を確認してください**\n" +
+            `> \`${serviceEmail}\` を「**編集者**」として共有してください。`,
+        });
+      } catch (err) {
+        await interaction.editReply({
+          content: `⚠️ 設定は保存されましたが、カレンダー投稿に失敗しました: \`${err.message}\``,
+        });
+      }
+      return;
+    }
+
+    if (interaction.commandName === "setup-remove") {
+      const config = loadConfig(guildId);
+      if (!config) {
+        return interaction.reply({ content: "ℹ️ このサーバーはまだセットアップされていません。", ephemeral: true });
+      }
+      deleteConfig(guildId);
+      return interaction.reply({ content: "✅ このサーバーの設定を削除しました。", ephemeral: true });
+    }
+    return;
+  }
+
+  const config = loadConfig(guildId);
+  if (!config) {
+    if (!interaction.replied && !interaction.deferred) {
+      return interaction.reply({ content: "❌ このサーバーはセットアップされていません。管理者に `/setup` の実行を依頼してください。", ephemeral: true }).catch(() => {});
+    }
+    return;
+  }
+
   if (interaction.isButton()) {
     const id = interaction.customId;
 
-    // 🔄 更新（権限不要）
     if (id === "btn_refresh") {
       await interaction.deferReply({ ephemeral: true });
       try {
         const { year, month } = currentYM();
-        const events = await getMonthEvents(year, month);
-        await updateBoth(events, year, month);
-        saveState({ lastHash: hashEvents(events), updatedAt: new Date().toISOString() });
+        const events = await getMonthEvents(config.calendarId, year, month);
+        await updateBoth(guildId, config, events, year, month);
+        saveState(guildId, { lastHash: hashEvents(events), updatedAt: new Date().toISOString() });
         const msg = "✅ カレンダーとステータスを更新しました！";
         await interaction.editReply({ content: fmtCd(msg, 5) });
         startCountdownDelete(interaction, msg);
@@ -185,16 +255,14 @@ client.on("interactionCreate", async (interaction) => {
       }
     }
 
-    // ◄先月 / 次月►（権限不要）
     if (id.startsWith("btn_prev_") || id.startsWith("btn_next_")) {
       const parts = id.split("_");
       const year  = parseInt(parts[2]);
       const month = parseInt(parts[3]);
       try {
-        const events  = await getMonthEvents(year, month);
-        const embed   = buildCalendarEmbed(events, year, month);
+        const events  = await getMonthEvents(config.calendarId, year, month);
+        const embed   = buildCalendarEmbed(guildId, events, year, month);
         const buttons = buildCalendarButtons(year, month);
-        // ephemeralメッセージからのクリックは上書き（置き換え）、それ以外は新規返信
         if (interaction.message.flags.has(MessageFlags.Ephemeral)) {
           return interaction.update({ embeds: [embed], components: [buttons] });
         } else {
@@ -202,75 +270,54 @@ client.on("interactionCreate", async (interaction) => {
           return interaction.editReply({ embeds: [embed], components: [buttons] });
         }
       } catch (err) {
-        if (interaction.deferred || interaction.replied) {
-          return interaction.editReply({ content: `❌ 取得失敗: ${err.message}` });
-        }
+        if (interaction.deferred || interaction.replied) return interaction.editReply({ content: `❌ 取得失敗: ${err.message}` });
         return interaction.reply({ content: `❌ 取得失敗: ${err.message}`, ephemeral: true });
       }
     }
 
-    // ── 以下は権限チェック必須 ────────────────
-    // ─── 通知設定ボタン（ephemeral後続・権限チェック不要）──────────
-
-    // @everyone / @here ボタン
     if (id.startsWith("btn_notify_everyone_") || id.startsWith("btn_notify_here_")) {
       const isEveryone = id.startsWith("btn_notify_everyone_");
       const roleId     = isEveryone ? "@everyone" : "@here";
       const eventId    = id.slice(isEveryone ? "btn_notify_everyone_".length : "btn_notify_here_".length);
-      const timeRows   = buildNotifyTimeButtons(eventId, roleId);
-      return interaction.update({
-        content: `⏰ ${roleId} への通知タイミングを選択してください：`,
-        components: timeRows,
-      });
+      return interaction.update({ content: `⏰ ${roleId} への通知タイミングを選択してください：`, components: buildNotifyTimeButtons(eventId, roleId) });
     }
 
-    // ユーザー時間選択ボタン (btn_notify_u_)
     if (id.startsWith("btn_notify_u_")) {
-      const withoutPrefix = id.slice("btn_notify_u_".length);
-      const lastUnd       = withoutPrefix.lastIndexOf("_");
-      const minutes       = parseInt(withoutPrefix.slice(lastUnd + 1));
-      const rest          = withoutPrefix.slice(0, lastUnd);
-      const secondLastUnd = rest.lastIndexOf("_");
-      const userId        = rest.slice(secondLastUnd + 1);
-      const eventId       = rest.slice(0, secondLastUnd);
-
-      const existing = getNoticesForEvent(eventId);
-      existing.push({ roleId: userId, minutesBefore: minutes, targetType: "user" });
-      setNoticesForEvent(eventId, existing);
-
-      const hoursText = minutes >= 60 ? `${minutes / 60}時間前` : `${minutes}分前`;
-      const { content: nmgrContent, components: nmgrComponents } = buildNoticeManageComponents(eventId);
-      return interaction.update({ content: nmgrContent, components: nmgrComponents });
+      const wp  = id.slice("btn_notify_u_".length);
+      const li  = wp.lastIndexOf("_");
+      const min = parseInt(wp.slice(li + 1));
+      const r   = wp.slice(0, li);
+      const si  = r.lastIndexOf("_");
+      const uid = r.slice(si + 1);
+      const eid = r.slice(0, si);
+      const ex  = getNoticesForEvent(guildId, eid);
+      ex.push({ roleId: uid, minutesBefore: min, targetType: "user" });
+      setNoticesForEvent(guildId, eid, ex);
+      const { content: nc, components: nco } = buildNoticeManageComponents(guildId, eid);
+      return interaction.update({ content: nc, components: nco });
     }
 
-    // 時間選択ボタン
     if (id.startsWith("btn_notify_t_")) {
-      // customId: btn_notify_t_{eventId}_{roleId}_{minutes} → 右からパース
-      const withoutPrefix = id.slice("btn_notify_t_".length);
-      const lastUnd       = withoutPrefix.lastIndexOf("_");
-      const minutes       = parseInt(withoutPrefix.slice(lastUnd + 1));
-      const rest          = withoutPrefix.slice(0, lastUnd);
-      const secondLastUnd = rest.lastIndexOf("_");
-      const roleId        = rest.slice(secondLastUnd + 1);
-      const eventId       = rest.slice(0, secondLastUnd);
-
-      const existing = getNoticesForEvent(eventId);
-      existing.push({ roleId, minutesBefore: minutes });
-      setNoticesForEvent(eventId, existing);
-
-      const hoursText   = minutes >= 60 ? `${minutes / 60}時間前` : `${minutes}分前`;
-      const { content: nmgrContent, components: nmgrComponents } = buildNoticeManageComponents(eventId);
-      return interaction.update({ content: nmgrContent, components: nmgrComponents });
+      const wp  = id.slice("btn_notify_t_".length);
+      const li  = wp.lastIndexOf("_");
+      const min = parseInt(wp.slice(li + 1));
+      const r   = wp.slice(0, li);
+      const si  = r.lastIndexOf("_");
+      const rid = r.slice(si + 1);
+      const eid = r.slice(0, si);
+      const ex  = getNoticesForEvent(guildId, eid);
+      ex.push({ roleId: rid, minutesBefore: min });
+      setNoticesForEvent(guildId, eid, ex);
+      const { content: nc, components: nco } = buildNoticeManageComponents(guildId, eid);
+      return interaction.update({ content: nc, components: nco });
     }
 
-    // 通知スキップ → 通知管理ビューへ
     if (id.startsWith("btn_notify_skip_")) {
-      const eventId = id.slice("btn_notify_skip_".length);
-      const { content: nmgrContent, components: nmgrComponents } = buildNoticeManageComponents(eventId);
-      return interaction.update({ content: nmgrContent, components: nmgrComponents });
+      const eid = id.slice("btn_notify_skip_".length);
+      const { content: nc, components: nco } = buildNoticeManageComponents(guildId, eid);
+      return interaction.update({ content: nc, components: nco });
     }
 
-    // 通知設定完了
     if (id.startsWith("btn_notify_done_")) {
       const msg = "✅ 通知設定を完了しました！";
       await interaction.update({ content: fmtCd(msg, 5), components: [] });
@@ -278,27 +325,22 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // もと1つ追加 → 通知管理ビューへリダイレクト
     if (id.startsWith("btn_notify_more_")) {
-      const eventId = id.slice("btn_notify_more_".length);
-      const { content: nmgrContent, components: nmgrComponents } = buildNoticeManageComponents(eventId);
-      return interaction.update({ content: nmgrContent, components: nmgrComponents });
+      const eid = id.slice("btn_notify_more_".length);
+      const { content: nc, components: nco } = buildNoticeManageComponents(guildId, eid);
+      return interaction.update({ content: nc, components: nco });
     }
 
-    // 通知管理ボタン群（権限チェック不要）
     if (id.startsWith("btn_nmgr_add_")) {
-      const eventId = id.slice("btn_nmgr_add_".length);
-      const [roleRow, userRow, skipRow] = buildRoleSelectForNotify(eventId);
-      return interaction.update({
-        content: "📣 通知するロールまたはユーザーを選択してください：",
-        components: [roleRow, userRow, skipRow],
-      });
+      const eid = id.slice("btn_nmgr_add_".length);
+      const [roleRow, userRow, skipRow] = buildRoleSelectForNotify(eid);
+      return interaction.update({ content: "📣 通知するロールまたはユーザーを選択してください：", components: [roleRow, userRow, skipRow] });
     }
 
     if (id.startsWith("btn_nmgr_del_")) {
       await interaction.deferUpdate();
-      const eventId = id.slice("btn_nmgr_del_".length);
-      const notices = getNoticesForEvent(eventId);
+      const eid = id.slice("btn_nmgr_del_".length);
+      const notices = getNoticesForEvent(guildId, eid);
       const options = [];
       for (let i = 0; i < notices.length; i++) {
         const n = notices[i];
@@ -309,21 +351,19 @@ client.on("interactionCreate", async (interaction) => {
           try {
             const member = await interaction.guild?.members.fetch(n.roleId);
             targetName = "@" + (member?.displayName || member?.user.username || n.roleId);
-          } catch {
-            targetName = "@" + n.roleId;
-          }
+          } catch { targetName = "@" + n.roleId; }
         } else {
           const role = interaction.guild?.roles.cache.get(n.roleId);
           targetName = "@" + (role?.name || n.roleId);
         }
-        const timeLabel = n.minutesBefore >= 60 ? `${n.minutesBefore / 60}時間前` : `${n.minutesBefore}分前`;
-        options.push({ label: `${i + 1}. ${targetName} / ${timeLabel}`.substring(0, 100), value: String(i) });
+        const tl = n.minutesBefore >= 60 ? `${n.minutesBefore / 60}時間前` : `${n.minutesBefore}分前`;
+        options.push({ label: `${i + 1}. ${targetName} / ${tl}`.substring(0, 100), value: String(i) });
       }
-      const { ActionRowBuilder: ARBD, StringSelectMenuBuilder: SSBD } = require("discord.js");
-      const delRow = new ARBD().addComponents(
-        new SSBD().setCustomId(`select_nmgr_del_${eventId}`).setPlaceholder("削除する通知を選択").addOptions(options)
-      );
-      return interaction.editReply({ content: "🗑️ 削除する通知を選択してください：", components: [delRow] });
+      const { ActionRowBuilder: ARB, StringSelectMenuBuilder: SSB } = require("discord.js");
+      return interaction.editReply({
+        content: "🗑️ 削除する通知を選択してください：",
+        components: [new ARB().addComponents(new SSB().setCustomId(`select_nmgr_del_${eid}`).setPlaceholder("削除する通知を選択").addOptions(options))],
+      });
     }
 
     if (id.startsWith("btn_nmgr_done_")) {
@@ -333,24 +373,17 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ── 以下は権限チェック必須 ────────────────────────
-    if (!hasPermission(interaction.member)) {
-      return interaction.reply({
-        content: `🔐 この操作には \`${OPERATOR_ROLE_NAME}\` ロールまたは管理者権限が必要です。`,
-        ephemeral: true,
-      });
+    if (!hasPermission(interaction.member, config.operatorRoleName)) {
+      return interaction.reply({ content: `🔐 この操作には \`${config.operatorRoleName}\` ロールまたは管理者権限が必要です。`, ephemeral: true });
     }
 
-    // ➕ 追加
     if (id === "btn_add") {
-      const today = new Date().toISOString().substring(0, 10);
-      return interaction.showModal(buildAddModal(today));
+      return interaction.showModal(buildAddModal(new Date().toISOString().substring(0, 10)));
     }
 
-    // ✏️ 編集
     if (id === "btn_edit_select") {
       const { year, month } = currentYM();
-      const events = await getMonthEvents(year, month);
+      const events = await getMonthEvents(config.calendarId, year, month);
       const menu   = buildSelectMenu(events, "select_edit_event", "編集する予定を選択");
       if (!menu) return interaction.reply({ content: "編集できる予定がありません。", ephemeral: true });
       await interaction.reply({ content: "✏️ 編集する予定を選んでください：", components: [menu], ephemeral: true });
@@ -358,41 +391,34 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // 🗑️ 削除
     if (id === "btn_delete_select") {
       const { year, month } = currentYM();
-      const events = await getMonthEvents(year, month);
+      const events = await getMonthEvents(config.calendarId, year, month);
       const menu   = buildSelectMenu(events, "select_delete_event", "削除する予定を選択");
       if (!menu) return interaction.reply({ content: "削除できる予定がありません。", ephemeral: true });
       return interaction.reply({ content: "🗑️ 削除する予定を選んでください：", components: [menu], ephemeral: true });
     }
 
-    // 削除確認
     if (id.startsWith("btn_confirm_delete_")) {
       await interaction.deferUpdate();
       const eventId = id.replace("btn_confirm_delete_", "");
       try {
-        let _auditInfo = null;
+        let _ai = null;
         try {
-          const _ev = await getEvent(eventId);
+          const _ev = await getEvent(config.calendarId, eventId);
           const _f  = formatEventLocal(_ev);
-          _auditInfo = {
-            title:   _f.title,
-            dateStr: (_ev.start.dateTime || _ev.start.date).substring(0, 10),
-            timeStr: _f.timeStr,
-            desc:    _ev.description || "",
-          };
+          _ai = { title: _f.title, dateStr: (_ev.start.dateTime || _ev.start.date).substring(0, 10), timeStr: _f.timeStr, desc: _ev.description || "" };
         } catch {}
-        await deleteEvent(eventId);
-        deleteNoticesForEvent(eventId);
-        if (_auditInfo) sendAuditLog("削除", interaction, _auditInfo);
+        await deleteEvent(config.calendarId, eventId);
+        deleteNoticesForEvent(guildId, eventId);
+        if (_ai) sendAuditLog("削除", interaction, _ai, config.logChannelId);
         const msg = "✅ 削除しました。";
         await interaction.editReply({ content: fmtCd(msg, 5), components: [] });
         startCountdownDelete(interaction, msg);
         const { year, month } = currentYM();
-        const events = await getMonthEvents(year, month);
-        await updateBoth(events, year, month);
-        saveState({ lastHash: hashEvents(events), updatedAt: new Date().toISOString() });
+        const events = await getMonthEvents(config.calendarId, year, month);
+        await updateBoth(guildId, config, events, year, month);
+        saveState(guildId, { lastHash: hashEvents(events), updatedAt: new Date().toISOString() });
       } catch (err) {
         const emsg = `❌ 削除失敗: ${err.message}`;
         await interaction.editReply({ content: fmtCd(emsg, 8), components: [] });
@@ -408,51 +434,38 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // ── セレクトメニュー ────────────────────────────────
   if (interaction.isStringSelectMenu()) {
-
-    // 通知削除対象選択（権限チェック不要）
     if (interaction.customId.startsWith("select_nmgr_del_")) {
-      const eventId = interaction.customId.slice("select_nmgr_del_".length);
-      const index   = parseInt(interaction.values[0]);
-      deleteNoticeEntry(eventId, index);
-      const { content: nmgrContent, components: nmgrComponents } = buildNoticeManageComponents(eventId);
-      return interaction.update({ content: nmgrContent, components: nmgrComponents });
+      const eid = interaction.customId.slice("select_nmgr_del_".length);
+      deleteNoticeEntry(guildId, eid, parseInt(interaction.values[0]));
+      const { content: nc, components: nco } = buildNoticeManageComponents(guildId, eid);
+      return interaction.update({ content: nc, components: nco });
     }
-
-    if (!hasPermission(interaction.member)) {
-      return interaction.reply({
-        content: `🔐 この操作には \`${OPERATOR_ROLE_NAME}\` ロールまたは管理者権限が必要です。`,
-        ephemeral: true,
-      });
+    if (!hasPermission(interaction.member, config.operatorRoleName)) {
+      return interaction.reply({ content: `🔐 この操作には \`${config.operatorRoleName}\` ロールまたは管理者権限が必要です。`, ephemeral: true });
     }
-
-    // 編集対象選択
     if (interaction.customId === "select_edit_event") {
       const eventId = interaction.values[0];
       try {
-        const event = await getEvent(eventId);
+        const event = await getEvent(config.calendarId, eventId);
         return interaction.showModal(buildEditModal(event));
       } catch (err) {
         return interaction.reply({ content: `❌ 取得失敗: ${err.message}`, ephemeral: true });
       }
     }
-
-    // 削除対象選択 → 確認
     if (interaction.customId === "select_delete_event") {
       await interaction.deferUpdate();
       const eventId = interaction.values[0];
       try {
-        const event = await getEvent(eventId);
+        const event = await getEvent(config.calendarId, eventId);
         const f     = formatEventLocal(event);
         const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`btn_confirm_delete_${eventId}`).setLabel("🗑️ 削除する").setStyle(ButtonStyle.Danger),
-          new ButtonBuilder().setCustomId("btn_cancel_delete").setLabel("キャンセル").setStyle(ButtonStyle.Secondary),
-        );
         return interaction.editReply({
           content: `⚠️ 本当に削除しますか？\n\n**${f.title}**　${f.d}日(${f.w})　\`${f.timeStr}\``,
-          components: [row],
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`btn_confirm_delete_${eventId}`).setLabel("🗑️ 削除する").setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId("btn_cancel_delete").setLabel("キャンセル").setStyle(ButtonStyle.Secondary),
+          )],
         });
       } catch (err) {
         return interaction.editReply({ content: `❌ 取得失敗: ${err.message}`, components: [] });
@@ -460,36 +473,24 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  // ── ロールセレクトメニュー（通知ロール選択）───────────────────
   if (interaction.isRoleSelectMenu()) {
     if (interaction.customId.startsWith("select_notify_role_")) {
-      const eventId  = interaction.customId.slice("select_notify_role_".length);
-      const roleId   = interaction.values[0];
-      const timeRows = buildNotifyTimeButtons(eventId, roleId, "role");
-      return interaction.update({
-        content: `⏰ <@&${roleId}> への通知タイミングを選択してください：`,
-        components: timeRows,
-      });
+      const eid  = interaction.customId.slice("select_notify_role_".length);
+      const rid  = interaction.values[0];
+      return interaction.update({ content: `⏰ <@&${rid}> への通知タイミングを選択してください：`, components: buildNotifyTimeButtons(eid, rid, "role") });
     }
   }
 
-  // ── ユーザーセレクトメニュー（通知ユーザー選択）───────────────
   if (interaction.isUserSelectMenu()) {
     if (interaction.customId.startsWith("select_notify_user_")) {
-      const eventId  = interaction.customId.slice("select_notify_user_".length);
-      const userId   = interaction.values[0];
-      const timeRows = buildNotifyTimeButtons(eventId, userId, "user");
-      return interaction.update({
-        content: `⏰ <@${userId}> への通知タイミングを選択してください：`,
-        components: timeRows,
-      });
+      const eid = interaction.customId.slice("select_notify_user_".length);
+      const uid = interaction.values[0];
+      return interaction.update({ content: `⏰ <@${uid}> への通知タイミングを選択してください：`, components: buildNotifyTimeButtons(eid, uid, "user") });
     }
   }
 
-  // ── モーダル送信 ──────────────────────────────────────
   if (interaction.isModalSubmit()) {
     await interaction.deferReply({ ephemeral: true });
-
     const title       = interaction.fields.getTextInputValue("title");
     const dateStr     = interaction.fields.getTextInputValue("date");
     const startTime   = normalizeTime(interaction.fields.getTextInputValue("start_time"));
@@ -503,28 +504,27 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
     if (startTime && !/^\d{2}:\d{2}$/.test(startTime)) {
-      const emsg = "❌ 時刻は `HH:MM` または `HHMM` 形式で入力してください。例: `18:00` / `2700`";
+      const emsg = "❌ 時刻は `HH:MM` または `HHMM` 形式で入力してください。";
       await interaction.editReply({ content: fmtCd(emsg, 8) });
       startCountdownDelete(interaction, emsg, 8);
       return;
     }
 
-    const timeInfo    = startTime ? ` ${startTime}～${endTime || ""}` : " 終日";
+    const timeInfo = startTime ? ` ${startTime}~${endTime || ""}` : " 終日";
 
-    // 追加
     if (interaction.customId === "modal_add") {
       try {
-        const event = await addEvent({ title, dateStr, startTime, endTime, description });
-        const { content: nmgrContent, components: nmgrComponents } = buildNoticeManageComponents(event.id);
+        const event = await addEvent(config.calendarId, { title, dateStr, startTime, endTime, description });
+        const { content: nc, components: nco } = buildNoticeManageComponents(guildId, event.id);
         await interaction.editReply({
-          content: `✅ 追加しました！\n**${title}**　${dateStr}${timeInfo}${description ? `\n📝 ${description}` : ""}\n\n` + nmgrContent,
-          components: nmgrComponents,
+          content: `✅ 追加しました！\n**${title}**　${dateStr}${timeInfo}${description ? `\n📝 ${description}` : ""}\n\n` + nc,
+          components: nco,
         });
         const { year, month } = currentYM();
-        const events = await getMonthEvents(year, month);
-        await updateBoth(events, year, month);
-        saveState({ lastHash: hashEvents(events), updatedAt: new Date().toISOString() });
-        sendAuditLog("追加", interaction, { title, dateStr, timeStr: startTime ? `${startTime}\uff5e${endTime || ""}` : "終日", desc: description });
+        const events = await getMonthEvents(config.calendarId, year, month);
+        await updateBoth(guildId, config, events, year, month);
+        saveState(guildId, { lastHash: hashEvents(events), updatedAt: new Date().toISOString() });
+        sendAuditLog("追加", interaction, { title, dateStr, timeStr: startTime ? `${startTime}~${endTime || ""}` : "終日", desc: description }, config.logChannelId);
       } catch (err) {
         const emsg = `❌ 追加失敗: ${err.message}`;
         await interaction.editReply({ content: fmtCd(emsg, 8) });
@@ -532,27 +532,23 @@ client.on("interactionCreate", async (interaction) => {
       }
     }
 
-    // 編集
     if (interaction.customId.startsWith("modal_edit_")) {
-      const _prevEdit = pendingEditInteractions.get(interaction.user.id);
-      if (_prevEdit) {
-        _prevEdit.deleteReply().catch(() => {});
-        pendingEditInteractions.delete(interaction.user.id);
-      }
+      const prev = pendingEditInteractions.get(interaction.user.id);
+      if (prev) { prev.deleteReply().catch(() => {}); pendingEditInteractions.delete(interaction.user.id); }
       const eventId = interaction.customId.replace("modal_edit_", "");
       try {
-        await updateEvent(eventId, { title, dateStr, startTime, endTime, description });
-        resetFiredForEvent(eventId); // 日時変更のためfiredAtをリセット
-        const { content: nmgrContent, components: nmgrComponents } = buildNoticeManageComponents(eventId);
+        await updateEvent(config.calendarId, eventId, { title, dateStr, startTime, endTime, description });
+        resetFiredForEvent(guildId, eventId);
+        const { content: nc, components: nco } = buildNoticeManageComponents(guildId, eventId);
         await interaction.editReply({
-          content: `✅ 更新しました！\n**${title}**　${dateStr}${timeInfo}${description ? `\n📝 ${description}` : ""}\n\n` + nmgrContent,
-          components: nmgrComponents,
+          content: `✅ 更新しました！\n**${title}**　${dateStr}${timeInfo}${description ? `\n📝 ${description}` : ""}\n\n` + nc,
+          components: nco,
         });
         const { year, month } = currentYM();
-        const events = await getMonthEvents(year, month);
-        await updateBoth(events, year, month);
-        saveState({ lastHash: hashEvents(events), updatedAt: new Date().toISOString() });
-        sendAuditLog("変更", interaction, { title, dateStr, timeStr: startTime ? `${startTime}\uff5e${endTime || ""}` : "終日", desc: description });
+        const events = await getMonthEvents(config.calendarId, year, month);
+        await updateBoth(guildId, config, events, year, month);
+        saveState(guildId, { lastHash: hashEvents(events), updatedAt: new Date().toISOString() });
+        sendAuditLog("変更", interaction, { title, dateStr, timeStr: startTime ? `${startTime}~${endTime || ""}` : "終日", desc: description }, config.logChannelId);
       } catch (err) {
         const emsg = `❌ 更新失敗: ${err.message}`;
         await interaction.editReply({ content: fmtCd(emsg, 8) });
@@ -562,89 +558,74 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-// ローカル用formatEvent（calendar.jsをrequireせずに使えるよう）
 function formatEventLocal(event) {
-  const { formatEvent } = require("./calendar");
-  return formatEvent(event);
+  return require("./calendar").formatEvent(event);
 }
 
-// ─── Bot起動 ─────────────────────────────────────────
 client.once("clientReady", async () => {
   console.log("========================================");
-  console.log(`  gcal-discord-bot v4 起動完了`);
+  console.log(`  gcal-discord-bot v5 起動完了（マルチギルド）`);
   console.log(`  ログイン: ${client.user.tag}`);
-  console.log(`  チャンネル: ${CHANNEL_ID}`);
-  console.log(`  操作ロール: ${OPERATOR_ROLE_NAME}`);
   console.log(`  スケジュール: ${CRON_SCHEDULE}`);
   console.log("========================================");
-
-  const channel = await client.channels.fetch(CHANNEL_ID);
-  await registerCommands(channel.guild.id);
-  await run(true);
-
-  cron.schedule(CRON_SCHEDULE, () => run(false), { timezone: "Asia/Tokyo" });
+  await registerGlobalCommands();
+  const guildIds = getAllGuildIds();
+  console.log(`[起動] 設定済みギルド数: ${guildIds.length}`);
+  for (const gid of guildIds) {
+    const cfg = loadConfig(gid);
+    if (cfg) run(gid, cfg, true).catch(console.error);
+  }
+  cron.schedule(CRON_SCHEDULE, async () => {
+    for (const gid of getAllGuildIds()) {
+      const cfg = loadConfig(gid);
+      if (cfg) run(gid, cfg, false).catch(console.error);
+    }
+  }, { timezone: "Asia/Tokyo" });
   console.log(`[Cron] 登録完了: "${CRON_SCHEDULE}"`);
+});
+
+client.on("guildDelete", (guild) => {
+  deleteConfig(guild.id);
+  console.log(`[GuildDelete] 設定削除: ${guild.id}`);
 });
 
 client.login(process.env.DISCORD_TOKEN);
 
-// ─── グレースフルシャットダウン ─────────────────────
 let isShuttingDown = false;
 async function gracefulShutdown(signal) {
   if (isShuttingDown) return;
   isShuttingDown = true;
   console.log(`[${signal}] シャットダウン開始...`);
-
-  // 10秒以内に完了しない場合は強制終了（Discord APIが詰まった場合の保険）
-  const timer = setTimeout(() => {
-    console.error("[Shutdown] タイムアウト - 強制終了します");
-    process.exit(1);
-  }, 10000);
-
+  const timer = setTimeout(() => { console.error("[Shutdown] タイムアウト"); process.exit(1); }, 10000);
   try {
-    const state = loadState();
-    console.log("[Shutdown] state:", JSON.stringify({ statusMessageId: state.statusMessageId, calendarMessageId: state.calendarMessageId }));
-
-    const channel = CHANNEL_ID ? await client.channels.fetch(CHANNEL_ID) : null;
-    if (!channel) {
-      console.error("[Shutdown] チャンネルが取得できませんでした (CHANNEL_ID:", CHANNEL_ID, ")");
-    } else {
-      // ステータスメッセージを停止中に更新（ボタン削除）
+    for (const gid of getAllGuildIds()) {
+      const cfg = loadConfig(gid);
+      if (!cfg) continue;
+      const state   = loadState(gid);
+      const channel = await client.channels.fetch(cfg.channelId).catch(() => null);
+      if (!channel) continue;
       if (state.statusMessageId) {
         try {
-          const msg   = await channel.messages.fetch(state.statusMessageId);
-          const embed = buildStatusEmbed([], state.updatedAt, OPERATOR_ROLE_NAME, false);
-          await msg.edit({ embeds: [embed], components: [] });
-          console.log("[Shutdown] ステータスを停止中に更新しました");
-        } catch (e) { console.error("[Shutdown] ステータス更新エラー:", e.message); }
+          const msg = await channel.messages.fetch(state.statusMessageId);
+          await msg.edit({ embeds: [buildStatusEmbed(gid, [], state.updatedAt, cfg.operatorRoleName, false)], components: [] });
+        } catch (e) { console.error(`[Shutdown][${gid}]`, e.message); }
       }
-      // カレンダーメッセージの先月・翌月・更新ボタンを非表示
       if (state.calendarMessageId) {
         try {
           const msg = await channel.messages.fetch(state.calendarMessageId);
           await msg.edit({ components: [] });
-          console.log("[Shutdown] カレンダーボタンを非表示にしました");
-        } catch (e) { console.error("[Shutdown] カレンダー更新エラー:", e.message); }
+        } catch (e) { console.error(`[Shutdown][${gid}]`, e.message); }
       }
     }
-  } catch (err) {
-    console.error("[Shutdown] シャットダウン処理エラー:", err.message);
-  }
-
+  } catch (err) { console.error("[Shutdown] エラー:", err.message); }
   clearTimeout(timer);
   client.destroy();
   await logger.close();
   process.exit(0);
 }
 
-process.on("SIGTERM", () => gracefulShutdown("SIGTERM").catch(err => { console.error("[SIGTERM]", err); process.exit(1); }));
-process.on("SIGINT",  () => gracefulShutdown("SIGINT").catch(err =>  { console.error("[SIGINT]",  err); process.exit(1); }));
-process.on("SIGHUP",  () => gracefulShutdown("SIGHUP").catch(err =>  { console.error("[SIGHUP]",  err); process.exit(1); }));
-
-// ─── 予期しないエラーで落ちない保護 ─────────────────
-process.on("unhandledRejection", (reason) => {
-  console.error("[UnhandledRejection]", reason);
-});
-process.on("uncaughtException", (err) => {
-  console.error("[UncaughtException]", err);
-});
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM").catch(() => process.exit(1)));
+process.on("SIGINT",  () => gracefulShutdown("SIGINT").catch(() =>  process.exit(1)));
+process.on("SIGHUP",  () => gracefulShutdown("SIGHUP").catch(() =>  process.exit(1)));
+process.on("unhandledRejection", (r) => console.error("[UnhandledRejection]", r));
+process.on("uncaughtException",  (e) => console.error("[UncaughtException]",  e));

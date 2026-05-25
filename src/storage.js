@@ -1,80 +1,83 @@
 /**
- * storage.js v4
- * state.json  : Bot状態（メッセージID・ハッシュ等）
- * notices.json: 通知設定（eventId → [{roleId, minutesBefore, fired}]）
+ * storage.js v5
+ * per-guild データストレージ
+ * data/{guildId}/state.json   : Bot状態（メッセージID・ハッシュ等）
+ * data/{guildId}/notices.json : 通知設定（eventId → [{roleId, minutesBefore, firedAt?}]）
  */
 const fs   = require("fs");
 const path = require("path");
+
 const DATA = path.join(__dirname, "../data");
 
-function read(file) {
-  const p = path.join(DATA, file);
+function read(guildId, file) {
+  const p = path.join(DATA, guildId, file);
   try {
     if (!fs.existsSync(p)) return {};
     return JSON.parse(fs.readFileSync(p, "utf-8"));
   } catch { return {}; }
 }
 
-function write(file, data) {
-  fs.mkdirSync(DATA, { recursive: true });
-  fs.writeFileSync(path.join(DATA, file), JSON.stringify(data, null, 2), "utf-8");
+function write(guildId, file, data) {
+  const dir = path.join(DATA, guildId);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, file), JSON.stringify(data, null, 2), "utf-8");
 }
 
 // ── state ──────────────────────────────────────────────
-function loadState()        { return read("state.json"); }
-function saveState(partial) { write("state.json", { ...loadState(), ...partial, updatedAt: new Date().toISOString() }); }
+function loadState(guildId)          { return read(guildId, "state.json"); }
+function saveState(guildId, partial) { write(guildId, "state.json", { ...loadState(guildId), ...partial, updatedAt: new Date().toISOString() }); }
 
 // ── notices ────────────────────────────────────────────
 // 構造: { [eventId]: [ { roleId, minutesBefore, firedAt? } ] }
-function loadNotices()          { return read("notices.json"); }
-function saveNotices(data)      { write("notices.json", data); }
+function loadNotices(guildId)         { return read(guildId, "notices.json"); }
+function saveNotices(guildId, data)   { write(guildId, "notices.json", data); }
 
-function getNoticesForEvent(eventId) {
-  return loadNotices()[eventId] || [];
+function getNoticesForEvent(guildId, eventId) {
+  return loadNotices(guildId)[eventId] || [];
 }
 
-function setNoticesForEvent(eventId, notices) {
-  const all = loadNotices();
+function setNoticesForEvent(guildId, eventId, notices) {
+  const all = loadNotices(guildId);
   if (!notices || notices.length === 0) {
     delete all[eventId];
   } else {
     all[eventId] = notices;
   }
-  saveNotices(all);
+  saveNotices(guildId, all);
 }
 
-function deleteNoticesForEvent(eventId) {
-  const all = loadNotices();
+function deleteNoticesForEvent(guildId, eventId) {
+  const all = loadNotices(guildId);
   delete all[eventId];
-  saveNotices(all);
+  saveNotices(guildId, all);
 }
 
-function markNoticeFired(eventId, index) {
-  const all = loadNotices();
+function markNoticeFired(guildId, eventId, index) {
+  const all = loadNotices(guildId);
   if (all[eventId]?.[index]) {
     all[eventId][index].firedAt = new Date().toISOString();
-    saveNotices(all);
+    saveNotices(guildId, all);
   }
 }
 
-function resetFiredForEvent(eventId) {
-  const all = loadNotices();
+function resetFiredForEvent(guildId, eventId) {
+  const all = loadNotices(guildId);
   if (all[eventId]) {
     all[eventId] = all[eventId].map(n => {
       const copy = { roleId: n.roleId, minutesBefore: n.minutesBefore };
       if (n.targetType) copy.targetType = n.targetType;
       return copy;
     });
-    saveNotices(all);
+    saveNotices(guildId, all);
   }
 }
 
-function deleteNoticeEntry(eventId, index) {
-  const all = loadNotices();
+function deleteNoticeEntry(guildId, eventId, index) {
+  const all = loadNotices(guildId);
   if (all[eventId]) {
     all[eventId].splice(index, 1);
     if (all[eventId].length === 0) delete all[eventId];
-    saveNotices(all);
+    saveNotices(guildId, all);
   }
 }
 

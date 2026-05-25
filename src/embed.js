@@ -16,8 +16,8 @@ function minutesToShort(m) {
 }
 
 // イベントの通知設定をコンパクトな文字列に変換
-function buildNoticeSummary(eventId) {
-  const notices = getNoticesForEvent(eventId);
+function buildNoticeSummary(guildId, eventId) {
+  const notices = getNoticesForEvent(guildId, eventId);
   if (!notices || notices.length === 0) return "";
   const parts = notices.map(n => {
     const mention = n.roleId === "@everyone" || n.roleId === "@here"
@@ -28,7 +28,7 @@ function buildNoticeSummary(eventId) {
   return "🔔" + parts.join(" ");
 }
 
-function buildCalendarEmbed(events, year, month) {
+function buildCalendarEmbed(guildId, events, year, month) {
   const now        = new Date();
   const isThisMonth = now.getFullYear() === year && now.getMonth() + 1 === month;
   const todayDate  = now.getDate();
@@ -73,8 +73,8 @@ function buildCalendarEmbed(events, year, month) {
     if (lastDayEventCount > 0) lines.push("");
     lastDayEventCount++;
 
-    const noticeStr   = buildNoticeSummary(event.id);
-    const noticeCount = getNoticesForEvent(event.id).length;
+    const noticeStr   = buildNoticeSummary(guildId, event.id);
+    const noticeCount = getNoticesForEvent(guildId, event.id).length;
     lines.push(`　\`${f.timeStr}\`　${f.title}${noticeStr && noticeCount <= 1 ? "　" + noticeStr : ""}`);
     if (f.desc) lines.push(`　${f.desc.replace(/^\n　/, "")}`);
     if (noticeStr && noticeCount > 1) lines.push(`　${noticeStr}`);
@@ -96,7 +96,7 @@ function buildCalendarButtons(year, month) {
   );
 }
 
-function buildStatusEmbed(events, lastUpdated, botRoleName, online = true) {
+function buildStatusEmbed(guildId, events, lastUpdated, botRoleName, online = true) {
   const now        = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const upcoming   = events
@@ -106,7 +106,7 @@ function buildStatusEmbed(events, lastUpdated, botRoleName, online = true) {
   let nextStr = "なし";
   if (next) {
     const f         = formatEvent(next);
-    const noticeStr = buildNoticeSummary(next.id);
+    const noticeStr = buildNoticeSummary(guildId, next.id);
     const desc      = f.desc ? f.desc.replace(/^\n　/, "") : "";
     const baseInfo  = `${f.d}日(${f.w}) ${f.title}　\`${f.timeStr}\``;
     const indent    = "　　　　 "; // ⏭️ 直近　 の幅に合わせたインデント
@@ -126,7 +126,7 @@ function buildStatusEmbed(events, lastUpdated, botRoleName, online = true) {
       `📆 今月　**${events.length}件**　残り **${upcoming.length}件**\n` +
       `⏭️ 直近　${nextStr}\n` +
       `🔃 最終同期　${lastUpdated ? jst(lastUpdated) : "未取得"}\n` +
-      `🔐 操作権限　\`${botRoleName || process.env.OPERATOR_ROLE_NAME || "CalendarOperator"}\` ロール保持者・管理者`
+      `🔐 操作権限　\`${botRoleName || "CalendarOperator"}\` ロール保持者・管理者`
     );
 }
 
@@ -202,8 +202,8 @@ function buildNotifyTimeButtons(eventId, targetId, targetType = "role") {
   return [row1, row2];
 }
 
-function buildNoticeManageComponents(eventId) {
-  const notices = getNoticesForEvent(eventId);
+function buildNoticeManageComponents(guildId, eventId) {
+  const notices = getNoticesForEvent(guildId, eventId);
   const lines = ["📋 **現在の通知設定**"];
   if (notices.length === 0) {
     lines.push("　設定なし");

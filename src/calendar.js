@@ -1,5 +1,6 @@
 /**
- * calendar.js v4
+ * calendar.js v5
+ * 全関数に calendarId 引数を追加（per-guild 対応）
  */
 const { google } = require("googleapis");
 
@@ -11,14 +12,13 @@ function getAuth() {
   });
 }
 
-async function getMonthEvents(year, month) {
+async function getMonthEvents(calendarId, year, month) {
   const auth     = getAuth();
   const calendar = google.calendar({ version: "v3", auth });
   const timeMin  = new Date(year, month - 1, 1).toISOString();
   const timeMax  = new Date(year, month, 0, 23, 59, 59).toISOString();
   const res = await calendar.events.list({
-    calendarId: process.env.GOOGLE_CALENDAR_ID,
-    timeMin, timeMax, singleEvents: true, orderBy: "startTime", maxResults: 50,
+    calendarId, timeMin, timeMax, singleEvents: true, orderBy: "startTime", maxResults: 50,
   });
   return res.data.items || [];
 }
@@ -39,7 +39,7 @@ function resolveDateTime(dateStr, timeStr) {
   return `${nd}T${String(normalH).padStart(2, "0")}:${String(m).padStart(2, "0")}:00+09:00`;
 }
 
-async function addEvent({ title, dateStr, startTime, endTime, description }) {
+async function addEvent(calendarId, { title, dateStr, startTime, endTime, description }) {
   const auth     = getAuth();
   const calendar = google.calendar({ version: "v3", auth });
   const start = startTime
@@ -49,13 +49,13 @@ async function addEvent({ title, dateStr, startTime, endTime, description }) {
     ? { dateTime: resolveDateTime(dateStr, endTime || startTime), timeZone: "Asia/Tokyo" }
     : { date: dateStr };
   const res = await calendar.events.insert({
-    calendarId: process.env.GOOGLE_CALENDAR_ID,
+    calendarId,
     requestBody: { summary: title, description: description || "", start, end },
   });
   return res.data;
 }
 
-async function updateEvent(eventId, { title, dateStr, startTime, endTime, description }) {
+async function updateEvent(calendarId, eventId, { title, dateStr, startTime, endTime, description }) {
   const auth     = getAuth();
   const calendar = google.calendar({ version: "v3", auth });
   const start = startTime
@@ -65,24 +65,24 @@ async function updateEvent(eventId, { title, dateStr, startTime, endTime, descri
     ? { dateTime: resolveDateTime(dateStr, endTime || startTime), timeZone: "Asia/Tokyo" }
     : { date: dateStr };
   const res = await calendar.events.patch({
-    calendarId: process.env.GOOGLE_CALENDAR_ID,
+    calendarId,
     eventId,
     requestBody: { summary: title, description: description || "", start, end },
   });
   return res.data;
 }
 
-async function getEvent(eventId) {
+async function getEvent(calendarId, eventId) {
   const auth     = getAuth();
   const calendar = google.calendar({ version: "v3", auth });
-  const res = await calendar.events.get({ calendarId: process.env.GOOGLE_CALENDAR_ID, eventId });
+  const res = await calendar.events.get({ calendarId, eventId });
   return res.data;
 }
 
-async function deleteEvent(eventId) {
+async function deleteEvent(calendarId, eventId) {
   const auth     = getAuth();
   const calendar = google.calendar({ version: "v3", auth });
-  await calendar.events.delete({ calendarId: process.env.GOOGLE_CALENDAR_ID, eventId });
+  await calendar.events.delete({ calendarId, eventId });
 }
 
 function hashEvents(events) {
