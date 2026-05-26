@@ -152,14 +152,18 @@ JSON ファイルの中身はこのような形になっています：
 **Windows（PowerShell で実行）：**
 ```powershell
 # 方法1: Fly.io 公式スクリプト（推奨）
+# %USERPROFILE%\.fly\bin\ にインストールされ、PATH も自動設定される
 iwr https://fly.io/install.ps1 -useb | iex
 
-# 方法2: winget が使える場合
+# 方法2: winget を使う場合
 winget install flyctl
 ```
 
 > PowerShell は スタートメニュー → 「Windows PowerShell」で開けます。  
 > インストール後、**PowerShell を再起動** してから次の手順に進んでください。
+
+> ⚠️ **winget でインストールした場合、`fly` コマンドが見つからないことがあります。**  
+> その場合は [トラブルシューティング](#-windows-で-fly-コマンドが見つからない-winget-でインストール済み) を参照してください。
 
 **Mac（ターミナルで実行）：**
 ```bash
@@ -379,6 +383,45 @@ node src/index.js
 
 **原因:** Bot が応答する前に 3秒のタイムアウトが発生した  
 **対処:** Bot のレスポンスが遅い場合は Fly.io のリージョンを確認（日本なら `nrt`）
+
+---
+
+### ❌ Windows で `fly` コマンドが見つからない（winget でインストール済み）
+
+**原因:** `winget install flyctl` は成功しているが、PATH へのシムリンク作成が失敗し `fly` コマンドが利用できない場合があります。
+
+**対処1: その場のセッションで使えるようにする（PowerShell を閉じると無効）**
+
+```powershell
+# flyctl.exe の実際の場所を PATH に追加する
+$flyDir = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Fly-io.flyctl_Microsoft.Winget.Source_8wekyb3d8bbwe"
+$env:Path += ";$flyDir"
+
+# 確認
+flyctl version
+```
+
+**対処2: PATH に永続追加する（推奨）**
+
+```powershell
+$flyDir = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Fly-io.flyctl_Microsoft.Winget.Source_8wekyb3d8bbwe"
+[System.Environment]::SetEnvironmentVariable("Path", [System.Environment]::GetEnvironmentVariable("Path","User") + ";$flyDir", "User")
+$env:Path += ";$flyDir"  # 今のセッションにも反映
+
+# 確認
+flyctl version
+```
+
+> 設定後、新しく開く PowerShell ウィンドウでは自動的に有効になります。
+
+**対処3: 公式スクリプトで再インストールする（一番確実）**
+
+```powershell
+# 既存版を削除してから公式スクリプトでインストール
+winget uninstall flyctl
+iwr https://fly.io/install.ps1 -useb | iex
+```
+> 公式スクリプトは `%USERPROFILE%\.fly\bin\` にインストールし、PATH も自動設定します。インストール後に PowerShell を再起動してください。
 
 ---
 
