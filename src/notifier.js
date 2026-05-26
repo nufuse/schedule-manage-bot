@@ -23,9 +23,15 @@ async function checkAndFireNotices(client, guildId, config) {
   const allEvents = [...thisMonth, ...nextMonth];
   const eventMap  = Object.fromEntries(allEvents.map(e => [e.id, e]));
 
+  const hasNotifyChannel = !!config.notifyChannelId;
   const channelId = config.notifyChannelId || config.channelId;
   const channel   = await client.channels.fetch(channelId).catch(() => null);
   if (!channel) return;
+
+  // 通知チャンネルあり → 7日、なし（カレンダーチャンネル）→ 1日
+  const deleteAfterMs = hasNotifyChannel
+    ? 7 * 24 * 60 * 60 * 1000
+    : 24 * 60 * 60 * 1000;
 
   for (const [eventId, settings] of Object.entries(notices)) {
     const event = eventMap[eventId];
@@ -55,6 +61,16 @@ async function checkAndFireNotices(client, guildId, config) {
         return s.targetType === "user" ? `<@${s.roleId}>` : `<@&${s.roleId}>`;
       }).join(" ");
 
+      // 削除予定時刻の計算とフッター文字列
+      const deleteAt    = new Date(now.getTime() + deleteAfterMs);
+      const mm          = String(deleteAt.getMonth() + 1).padStart(2, "0");
+      const dd          = String(deleteAt.getDate()).padStart(2, "0");
+      const hh          = String(deleteAt.getHours()).padStart(2, "0");
+      const mi          = String(deleteAt.getMinutes()).padStart(2, "0");
+      const footerText  = hasNotifyChannel
+        ? `🗑️ あと7日で削除（${mm}/${dd} ${hh}:${mi}）`
+        : `🗑️ あと24時間で削除（${mm}/${dd} ${hh}:${mi}）`;
+
       const embed = new EmbedBuilder()
         .setColor(0xfee75c)
         .setTitle(`⏰ 予定のお知らせ（${hoursText}）`)
@@ -63,10 +79,12 @@ async function checkAndFireNotices(client, guildId, config) {
           `📅 ${f.d}日(${f.w})　\`${f.timeStr}\`` +
           (f.desc ? `\n📝 ${f.desc.replace(/^\n　/, "")}` : "")
         )
+        .setFooter({ text: footerText })
         .setTimestamp();
 
       try {
-        await channel.send({ content: mentions, embeds: [embed] });
+        const msg = await channel.send({ content: mentions, embeds: [embed] });
+        setTimeout(() => msg.delete().catch(() => {}), deleteAfterMs);
         for (const i of indices) markNoticeFired(guildId, eventId, i);
         console.log(`[Notify][${guildId}] 送信: ${f.title} → ${mentions} (${hoursText})`);
       } catch (err) {
