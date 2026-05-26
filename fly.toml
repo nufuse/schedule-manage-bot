@@ -1,0 +1,23 @@
+# fly.toml app configuration file generated for schedule-manage-bot on 2026-05-26T09:29:12+09:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'schedule-manage-bot'
+primary_region = 'nrt'
+
+[build]
+
+[env]
+  NODE_ENV = 'production'
+  TZ = 'Asia/Tokyo'
+
+[[mounts]]
+  source = 'schedule_bot_data'
+  destination = '/app/data'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '256mb'
+  cpus = 1
+  memory_mb = 256
