@@ -147,51 +147,74 @@ JSON ファイルの中身はこのような形になっています：
 
 ### 1. 前準備
 
-```bash
-# Fly CLI をインストール（初回のみ）
-# Windows
+**Fly CLI のインストール（初回のみ）**
+
+**Windows（PowerShell で実行）：**
+```powershell
+# 方法1: Fly.io 公式スクリプト（推奨）
+iwr https://fly.io/install.ps1 -useb | iex
+
+# 方法2: winget が使える場合
 winget install flyctl
+```
 
-# mac
+> PowerShell は スタートメニュー → 「Windows PowerShell」で開けます。  
+> インストール後、**PowerShell を再起動** してから次の手順に進んでください。
+
+**Mac（ターミナルで実行）：**
+```bash
 brew install flyctl
+```
 
-# アカウントにログイン（初回のみ）
+**アカウントにログイン（初回のみ）：**
+```powershell
 fly auth login
 ```
+ブラウザが開くので Fly.io のアカウントでログインしてください（アカウント未作成の場合は [fly.io](https://fly.io) で無料登録）。
 
 ### 2. プロジェクトをデプロイする
 
-```bash
-# リポジトリのルートで実行
-cd schedule-bot
+以下はすべて **PowerShell** で実行します。
+
+```powershell
+# リポジトリのルートに移動（パスは実際の場所に合わせてください）
+cd C:\temp\github\schedule-bot
 
 # Fly.io アプリを作成（fly.toml が既にあるので --no-deploy を使用）
 fly launch --no-deploy
 
 # 永続ボリュームを作成（予定・通知データ保存用）
 fly volumes create schedule_bot_data --size 1 --region nrt
+```
 
-# 環境変数（シークレット）を設定
-fly secrets set \
-  DISCORD_TOKEN="ここにDiscordのBotトークン" \
-  GOOGLE_CLIENT_EMAIL="ここにサービスアカウントのメール" \
-  GOOGLE_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----\n"
+次に環境変数（シークレット）を設定します。**1行ずつ** 実行してください：
 
+```powershell
+fly secrets set DISCORD_TOKEN="ここにDiscordのBotトークン"
+fly secrets set GOOGLE_CLIENT_EMAIL="ここにサービスアカウントのメール"
+fly secrets set GOOGLE_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----\n"
+```
+
+> `GOOGLE_PRIVATE_KEY` は JSON ファイルの `private_key` の値をそのままコピーしてください。  
+> 値全体をダブルクォート `"..."` で囲み、`\n` はそのまま残してください。
+
+```powershell
 # デプロイ実行
 fly deploy
 ```
 
-> `GOOGLE_PRIVATE_KEY` は JSON ファイルの `private_key` の値をそのままコピーしてください（`\n` はそのまま）。
-
 ### 3. 動作確認
 
-```bash
+```powershell
 # ログを確認
 fly logs
+```
 
-# 起動に成功すると以下のようなログが出ます:
-# gcal-discord-bot v5 起動完了（マルチギルド）
-# ログイン: BotName#1234
+起動に成功すると以下のようなログが表示されます：
+
+```
+gcal-discord-bot v5 起動完了（マルチギルド）
+ログイン: BotName#1234
 ```
 
 ---
