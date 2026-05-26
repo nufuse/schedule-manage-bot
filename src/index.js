@@ -5,6 +5,8 @@
  * - per-guild data: data/{guildId}/
  */
 require("dotenv").config();
+const fs     = require("fs");
+const path   = require("path");
 const logger = require("./logger");
 const {
   Client, GatewayIntentBits, REST, Routes, PermissionFlagsBits, MessageFlags,
@@ -20,6 +22,25 @@ const { checkAndFireNotices } = require("./notifier");
 const { loadConfig, saveConfig, deleteConfig, getAllGuildIds } = require("./guildConfig");
 
 const CRON_SCHEDULE = process.env.CRON_SCHEDULE || "*/5 * * * *";
+
+// 起動カウンターを data/.startup_count に保存
+function getAndIncrementStartupCount() {
+  const dir  = path.join(__dirname, "../data");
+  const file = path.join(dir, ".startup_count");
+  let count  = 0;
+  try {
+    if (fs.existsSync(file)) count = parseInt(fs.readFileSync(file, "utf8").trim()) || 0;
+    count++;
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, String(count), "utf8");
+  } catch {}
+  return count;
+}
+
+function fmtTimestamp(d = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}/${p(d.getMonth()+1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
 
 const pendingEditInteractions = new Map();
 const guildRunning = new Map();
@@ -87,6 +108,22 @@ async function sendAuditLog(action, interaction, { title, dateStr, timeStr, desc
     await ch.send({ embeds: [embed] });
   } catch (e) {
     console.error("[AuditLog] 送信失敗:", e.message);
+  }
+}
+
+// 全ギルドのログチャンネルにシステム通知を送信
+async function sendSystemLog(color, title, description) {
+  for (const gid of getAllGuildIds()) {
+    const cfg = loadConfig(gid);
+    if (!cfg?.logChannelId) continue;
+    try {
+      const ch = await client.channels.fetch(cfg.logChannelId);
+      await ch.send({
+        embeds: [new EmbedBuilder().setColor(color).setTitle(title).setDescription(description).setTimestamp()]
+      });
+    } catch (e) {
+      console.error(`[SystemLog][${gid}] 送信失敗: ${e.message}`);
+    }
   }
 }
 
@@ -563,10 +600,14 @@ function formatEventLocal(event) {
 }
 
 client.once("clientReady", async () => {
+  const startupCount = getAndIncrementStartupCount();
+  const ts           = fmtTimestamp();
   console.log("========================================");
   console.log(`  gcal-discord-bot v5 起動完了（マルチギルド）`);
   console.log(`  ログイン: ${client.user.tag}`);
   console.log(`  スケジュール: ${CRON_SCHEDULE}`);
+  console.log(`  起動回数: ${startupCount} 回目 | ${ts}`);
+  console.log(`  PID: ${process.pid}`);
   console.log("========================================");
   await registerGlobalCommands();
   const guildIds = getAllGuildIds();
@@ -582,11 +623,40 @@ client.once("clientReady", async () => {
     }
   }, { timezone: "Asia/Tokyo" });
   console.log(`[Cron] 登録完了: "${CRON_SCHEDULE}"`);
+
+  // 起動・再起動をログチャンネルに送信
+  const isRestart  = startupCount > 1;
+  const logColor   = isRestart ? 0xfee75c : 0x57f287;
+  const logTitle   = isRestart ? `🔄 Bot 再起動 (#${startupCount})` : `✅ Bot 起動`;
+  const logDesc    = `ログイン: **${client.user.tag}**\n起動時刻: ${ts}\nPID: ${process.pid}`;
+  sendSystemLog(logColor, logTitle, logDesc).catch(console.error);
 });
 
 client.on("guildDelete", (guild) => {
   deleteConfig(guild.id);
   console.log(`[GuildDelete] 設定削除: ${guild.id}`);
+});
+
+// Discord 接続状態のログ
+client.on("shardDisconnect", (event, shardId) => {
+  const ts = fmtTimestamp();
+  console.warn(`[Discord] 接続切断 (shard:${shardId}, code:${event.code}) ${ts}`);
+  sendSystemLog(0xed4245, `⚠️ Discord 接続切断`, `shard: ${shardId} | code: ${event.code}\n時刻: ${ts}`).catch(() => {});
+});
+client.on("shardReconnecting", (shardId) => {
+  const ts = fmtTimestamp();
+  console.log(`[Discord] 再接続中... (shard:${shardId}) ${ts}`);
+  sendSystemLog(0x5865f2, `🔄 Discord 再接続中…`, `shard: ${shardId}\n時刻: ${ts}`).catch(() => {});
+});
+client.on("shardResume", (shardId, replayed) => {
+  const ts = fmtTimestamp();
+  console.log(`[Discord] 接続再開 (shard:${shardId}, replayed:${replayed}) ${ts}`);
+  sendSystemLog(0x57f287, `✅ Discord 接続再開`, `shard: ${shardId} | replayed: ${replayed}\n時刻: ${ts}`).catch(() => {});
+});
+client.on("error", (err) => {
+  const ts = fmtTimestamp();
+  console.error(`[Discord] エラー: ${err.message} ${ts}`);
+  sendSystemLog(0xed4245, `❌ Discord エラー`, `${err.message}\n時刻: ${ts}`).catch(() => {});
 });
 
 client.login(process.env.DISCORD_TOKEN);
@@ -595,9 +665,12 @@ let isShuttingDown = false;
 async function gracefulShutdown(signal) {
   if (isShuttingDown) return;
   isShuttingDown = true;
+  const ts = fmtTimestamp();
   console.log(`[${signal}] シャットダウン開始...`);
   const timer = setTimeout(() => { console.error("[Shutdown] タイムアウト"); process.exit(1); }, 10000);
   try {
+    // 停止通知をログチャンネルに送信
+    await sendSystemLog(0xed4245, `🛑 Bot 停止`, `シグナル: ${signal}\n時刻: ${ts}`).catch(() => {});
     for (const gid of getAllGuildIds()) {
       const cfg = loadConfig(gid);
       if (!cfg) continue;
