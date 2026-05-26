@@ -100,7 +100,9 @@ JSON ファイルの中身はこのような形になっています：
 4. サービスアカウントのメールアドレス（例: `calendar-bot@discord-schedule-bot.iam.gserviceaccount.com`）を入力
 5. 権限を **「予定の変更」（編集者）** に設定して **「送信」**
 
-> カレンダー ID は「設定と共有」の **「カレンダーの統合」** セクションで確認できます（通常は `xxxx@group.calendar.google.com` またはメールアドレス形式）。
+> 📋 **カレンダー ID をメモしておいてください！**  
+> 同じ「設定と共有」ページの **「カレンダーの統合」** セクションに **「カレンダー ID」** が表示されています（例: `xxxx@group.calendar.google.com`）。  
+> この値は後の `/setup` コマンドの `calendar_id` に入力します。
 
 ---
 
@@ -151,19 +153,13 @@ JSON ファイルの中身はこのような形になっています：
 
 **Windows（PowerShell で実行）：**
 ```powershell
-# 方法1: Fly.io 公式スクリプト（推奨）
+# Fly.io 公式スクリプト
 # %USERPROFILE%\.fly\bin\ にインストールされ、PATH も自動設定される
 iwr https://fly.io/install.ps1 -useb | iex
-
-# 方法2: winget を使う場合
-winget install flyctl
 ```
 
 > PowerShell は スタートメニュー → 「Windows PowerShell」で開けます。  
 > インストール後、**PowerShell を再起動** してから次の手順に進んでください。
-
-> ⚠️ **winget でインストールした場合、`fly` コマンドが見つからないことがあります。**  
-> その場合は [トラブルシューティング](#-windows-で-fly-コマンドが見つからない-winget-でインストール済み) を参照してください。
 
 **Mac（ターミナルで実行）：**
 ```bash
@@ -186,10 +182,26 @@ cd C:\temp\github\schedule-bot
 
 # Fly.io アプリを作成（fly.toml が既にあるので --no-deploy を使用）
 fly launch --no-deploy
+```
 
+実行するとブラウザでWeb UIが開きます。以下の通りに設定してください：
+
+| 項目 | 設定値 |
+|------|--------|
+| **App Name** | 任意（グローバルで一意の名前。`schedule-manage-bot` が使われていたら末尾に任意の文字を追加） |
+| **Region** | `nrt`（東京）を選択 |
+| **Postgres / Redis** | どちらも **No / Skip** |
+
+設定を確認したら **「Confirm Settings」** をクリックします。  
+
+> ⚠️ App Name を変更した場合は `fly.toml` の `app = '...'` を同じ名前に書き換えてください。
+
+```powershell
 # 永続ボリュームを作成（予定・通知データ保存用）
 fly volumes create schedule_bot_data --size 1 --region nrt
 ```
+
+> 途中で `Do you still want to use the volumes feature?` と表示されたら **`y`** を入力して Enter を押してください。
 
 次に環境変数（シークレット）を設定します。**1行ずつ** 実行してください：
 
@@ -210,7 +222,7 @@ fly deploy
 ### 3. 動作確認
 
 ```powershell
-# ログを確認
+# ログを確認（リアルタイムで流れ続けます）
 fly logs
 ```
 
@@ -220,6 +232,8 @@ fly logs
 gcal-discord-bot v5 起動完了（マルチギルド）
 ログイン: BotName#1234
 ```
+
+> ログの表示を終了するには **Ctrl + C** を押してください。PowerShell のプロンプトに戻ります。
 
 ---
 
@@ -383,45 +397,6 @@ node src/index.js
 
 **原因:** Bot が応答する前に 3秒のタイムアウトが発生した  
 **対処:** Bot のレスポンスが遅い場合は Fly.io のリージョンを確認（日本なら `nrt`）
-
----
-
-### ❌ Windows で `fly` コマンドが見つからない（winget でインストール済み）
-
-**原因:** `winget install flyctl` は成功しているが、PATH へのシムリンク作成が失敗し `fly` コマンドが利用できない場合があります。
-
-**対処1: その場のセッションで使えるようにする（PowerShell を閉じると無効）**
-
-```powershell
-# flyctl.exe の実際の場所を PATH に追加する
-$flyDir = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Fly-io.flyctl_Microsoft.Winget.Source_8wekyb3d8bbwe"
-$env:Path += ";$flyDir"
-
-# 確認
-flyctl version
-```
-
-**対処2: PATH に永続追加する（推奨）**
-
-```powershell
-$flyDir = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Fly-io.flyctl_Microsoft.Winget.Source_8wekyb3d8bbwe"
-[System.Environment]::SetEnvironmentVariable("Path", [System.Environment]::GetEnvironmentVariable("Path","User") + ";$flyDir", "User")
-$env:Path += ";$flyDir"  # 今のセッションにも反映
-
-# 確認
-flyctl version
-```
-
-> 設定後、新しく開く PowerShell ウィンドウでは自動的に有効になります。
-
-**対処3: 公式スクリプトで再インストールする（一番確実）**
-
-```powershell
-# 既存版を削除してから公式スクリプトでインストール
-winget uninstall flyctl
-iwr https://fly.io/install.ps1 -useb | iex
-```
-> 公式スクリプトは `%USERPROFILE%\.fly\bin\` にインストールし、PATH も自動設定します。インストール後に PowerShell を再起動してください。
 
 ---
 
