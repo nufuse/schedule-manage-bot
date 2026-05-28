@@ -6,41 +6,42 @@
  *   @ロール名 1時間前
  */
 const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require("discord.js");
+const { pick } = require("./i18n");
 
-function buildAddModal(defaultDate = "") {
-  const modal = new ModalBuilder().setCustomId("modal_add").setTitle("📅 予定を追加");
+function buildAddModal(defaultDate = "", lang = "ja") {
+  const modal = new ModalBuilder().setCustomId("modal_add").setTitle(pick(lang, "📅 予定を追加", "📅 Add Event"));
   modal.addComponents(
     new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("title").setLabel("タイトル（必須）")
+      new TextInputBuilder().setCustomId("title").setLabel(pick(lang, "タイトル（必須）", "Title (required)"))
         .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100)
-        .setPlaceholder("例: 撮影、会議、配信")
+        .setPlaceholder(pick(lang, "例: 撮影、会議、配信", "e.g. Practice, Match, Meeting"))
     ),
     new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("date").setLabel("日付（必須）YYYY-MM-DD")
+      new TextInputBuilder().setCustomId("date").setLabel(pick(lang, "日付（必須）YYYY-MM-DD", "Date (required) YYYY-MM-DD"))
         .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(10)
-        .setPlaceholder("例: 2026-05-20").setValue(defaultDate)
+        .setPlaceholder(pick(lang, "例: 2026-05-20", "e.g. 2026-05-20")).setValue(defaultDate)
     ),
     new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("start_time").setLabel("開始時刻（任意）HHMM または HH:MM　空欄で終日")
+      new TextInputBuilder().setCustomId("start_time").setLabel(pick(lang, "開始時刻（任意）HHMM または HH:MM　空欄で終日", "Start time (optional) HHMM or HH:MM, blank for all-day"))
         .setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(5)
-        .setPlaceholder("例: 2100 / 21:00 / 2500(翌1時)")
+        .setPlaceholder(pick(lang, "例: 2100 / 21:00 / 2500(翌1時)", "e.g. 2100 / 21:00 / 2500(next day 1:00)"))
     ),
     new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("end_time").setLabel("終了時刻（任意）HHMM または HH:MM")
+      new TextInputBuilder().setCustomId("end_time").setLabel(pick(lang, "終了時刻（任意）HHMM または HH:MM", "End time (optional) HHMM or HH:MM"))
         .setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(5)
-        .setPlaceholder("例: 2300 / 23:00 / 2700(翌3時)")
+        .setPlaceholder(pick(lang, "例: 2300 / 23:00 / 2700(翌3時)", "e.g. 2300 / 23:00 / 2700(next day 3:00)"))
     ),
     new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("description").setLabel("詳細・メモ（任意）")
+      new TextInputBuilder().setCustomId("description").setLabel(pick(lang, "詳細・メモ（任意）", "Description/Notes (optional)"))
         .setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(500)
-        .setPlaceholder("例: 場所、持ち物、備考など")
+        .setPlaceholder(pick(lang, "例: 場所、持ち物、備考など", "e.g. Place, items, notes"))
     ),
   );
   return modal;
 }
 
-function buildEditModal(event) {
-  const modal = new ModalBuilder().setCustomId(`modal_edit_${event.id}`).setTitle("✏️ 予定を編集");
+function buildEditModal(event, lang = "ja") {
+  const modal = new ModalBuilder().setCustomId(`modal_edit_${event.id}`).setTitle(pick(lang, "✏️ 予定を編集", "✏️ Edit Event"));
 
   const startRaw  = event.start.dateTime || event.start.date || "";
   const dateStr   = startRaw.substring(0, 10);
@@ -53,26 +54,26 @@ function buildEditModal(event) {
 
   modal.addComponents(
     new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("title").setLabel("タイトル（必須）")
+      new TextInputBuilder().setCustomId("title").setLabel(pick(lang, "タイトル（必須）", "Title (required)"))
         .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100)
         .setValue(event.summary || "")
     ),
     new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("date").setLabel("日付（必須）YYYY-MM-DD")
+      new TextInputBuilder().setCustomId("date").setLabel(pick(lang, "日付（必須）YYYY-MM-DD", "Date (required) YYYY-MM-DD"))
         .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(10).setValue(dateStr)
     ),
     new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("start_time").setLabel("開始時刻（任意）HHMM または HH:MM　空欄で終日")
+      new TextInputBuilder().setCustomId("start_time").setLabel(pick(lang, "開始時刻（任意）HHMM または HH:MM　空欄で終日", "Start time (optional) HHMM or HH:MM, blank for all-day"))
         .setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(5).setValue(startTime)
     ),
     new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("end_time").setLabel("終了時刻（任意）HHMM または HH:MM")
+      new TextInputBuilder().setCustomId("end_time").setLabel(pick(lang, "終了時刻（任意）HHMM または HH:MM", "End time (optional) HHMM or HH:MM"))
         .setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(5).setValue(endTime)
     ),
     new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId("description").setLabel("詳細・メモ（任意）")
+      new TextInputBuilder().setCustomId("description").setLabel(pick(lang, "詳細・メモ（任意）", "Description/Notes (optional)"))
         .setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(500)
-        .setPlaceholder("例: 場所、持ち物、備考など")
+        .setPlaceholder(pick(lang, "例: 場所、持ち物、備考など", "e.g. Place, items, notes"))
         .setValue(event.description || "")
     ),
   );
