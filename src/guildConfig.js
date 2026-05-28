@@ -9,6 +9,8 @@
  *   calendarId:       string   Google Calendar ID
  *   notifyChannelId:  string|null  通知チャンネル（null → channelId と同じ）
  *   logChannelId:     string|null  ログチャンネル（null → ログなし）
+ *   logEnabled:       boolean  ログ通知ON/OFF（省略時はON扱い）
+ *   language:         "ja"|"en"  Bot表示言語（省略時はja）
  *   operatorRoleName: string   操作ロール名
  * }
  */
@@ -23,7 +25,7 @@ function configPath(guildId) {
 
 /**
  * @param {string} guildId
- * @returns {{ channelId, calendarId, notifyChannelId, logChannelId, operatorRoleName } | null}
+ * @returns {{ channelId, calendarId, notifyChannelId, logChannelId, logEnabled, language, operatorRoleName } | null}
  */
 function loadConfig(guildId) {
   try {

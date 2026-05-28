@@ -92,24 +92,26 @@ function hashEvents(events) {
   return h.toString(16);
 }
 
-function formatEvent(event) {
+function formatEvent(event, lang = "ja") {
   const start    = event.start.dateTime || event.start.date;
   const date     = new Date(start);
-  const weekdays = ["日","月","火","水","木","金","土"];
+  const weekdays = lang === "en"
+    ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    : ["日","月","火","水","木","金","土"];
   const d = date.getDate();
   const w = weekdays[date.getDay()];
-  let timeStr = "終日";
+  let timeStr = lang === "en" ? "All day" : "終日";
   if (event.start.dateTime) {
     const h = date.getHours().toString().padStart(2,"0");
     const m = date.getMinutes().toString().padStart(2,"0");
     timeStr = `${h}:${m}`;
     if (event.end?.dateTime) {
       const end = new Date(event.end.dateTime);
-      timeStr += `〜${end.getHours().toString().padStart(2,"0")}:${end.getMinutes().toString().padStart(2,"0")}`;
+      timeStr += `${lang === "en" ? "-" : "〜"}${end.getHours().toString().padStart(2,"0")}:${end.getMinutes().toString().padStart(2,"0")}`;
     }
   }
   const desc = event.description ? `\n　${event.description}` : "";
-  return { d, w, timeStr, title: event.summary || "(無題)", desc, id: event.id };
+  return { d, w, timeStr, title: event.summary || (lang === "en" ? "(Untitled)" : "(無題)"), desc, id: event.id };
 }
 
 module.exports = { getMonthEvents, addEvent, updateEvent, getEvent, deleteEvent, hashEvents, formatEvent };

@@ -5,6 +5,7 @@
 const { EmbedBuilder } = require("discord.js");
 const { getMonthEvents, formatEvent } = require("./calendar");
 const { loadNotices, markNoticeFired, deleteNoticesForEvent } = require("./storage");
+const { getLang, pick } = require("./i18n");
 
 /**
  * @param {Client} client
@@ -12,6 +13,7 @@ const { loadNotices, markNoticeFired, deleteNoticesForEvent } = require("./stora
  * @param {{ calendarId, notifyChannelId, channelId }} config
  */
 async function checkAndFireNotices(client, guildId, config) {
+  const lang = getLang(config);
   const notices = loadNotices(guildId);
   if (Object.keys(notices).length === 0) return;
 
@@ -49,11 +51,11 @@ async function checkAndFireNotices(client, guildId, config) {
       groups.get(s.minutesBefore).push(i);
     }
 
-    const f = formatEvent(event);
+    const f = formatEvent(event, lang);
     for (const [minutesBefore, indices] of groups) {
       const hoursText = minutesBefore >= 60
-        ? `${minutesBefore / 60}時間前`
-        : `${minutesBefore}分前`;
+        ? (lang === "en" ? `${minutesBefore / 60}h before` : `${minutesBefore / 60}時間前`)
+        : (lang === "en" ? `${minutesBefore}m before` : `${minutesBefore}分前`);
 
       const mentions = indices.map(i => {
         const s = settings[i];
@@ -68,15 +70,15 @@ async function checkAndFireNotices(client, guildId, config) {
       const hh          = String(deleteAt.getHours()).padStart(2, "0");
       const mi          = String(deleteAt.getMinutes()).padStart(2, "0");
       const footerText  = hasNotifyChannel
-        ? `🗑️ あと7日で削除（${mm}/${dd} ${hh}:${mi}）`
-        : `🗑️ あと24時間で削除（${mm}/${dd} ${hh}:${mi}）`;
+        ? pick(lang, `🗑️ あと7日で削除（${mm}/${dd} ${hh}:${mi}）`, `🗑️ Auto-delete in 7 days (${mm}/${dd} ${hh}:${mi})`)
+        : pick(lang, `🗑️ あと24時間で削除（${mm}/${dd} ${hh}:${mi}）`, `🗑️ Auto-delete in 24h (${mm}/${dd} ${hh}:${mi})`);
 
       const embed = new EmbedBuilder()
         .setColor(0xfee75c)
-        .setTitle(`⏰ 予定のお知らせ（${hoursText}）`)
+        .setTitle(pick(lang, `⏰ 予定のお知らせ（${hoursText}）`, `⏰ Event Reminder (${hoursText})`))
         .setDescription(
           `**${f.title}**\n` +
-          `📅 ${f.d}日(${f.w})　\`${f.timeStr}\`` +
+          (lang === "en" ? `📅 ${f.w} ${f.d}  \`${f.timeStr}\`` : `📅 ${f.d}日(${f.w})　\`${f.timeStr}\``) +
           (f.desc ? `\n📝 ${f.desc.replace(/^\n　/, "")}` : "")
         )
         .setFooter({ text: footerText })
