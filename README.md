@@ -234,7 +234,6 @@ fly logs
 GitHub 上の変更を反映するときは、リポジトリを最新化してから再デプロイします。
 
 ```powershell
-git pull origin main
 fly deploy
 ```
 
